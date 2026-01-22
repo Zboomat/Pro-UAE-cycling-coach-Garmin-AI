@@ -131,7 +131,7 @@ with tab1:
             try:
                 genai.configure(api_key=api_key)
                 # Vi försöker med Flash först, annars faller vi tillbaka
-                model_name = 'gemini-1.5-flash'
+                model_name = 'gemini-3-flash-preview'
                 model = genai.GenerativeModel(model_name)
                 
                 prompt = f"""
