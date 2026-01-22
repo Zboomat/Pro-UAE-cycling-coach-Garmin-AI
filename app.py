@@ -13,23 +13,20 @@ MAINTENANCE_FILE = "service_log.json"
 st.set_page_config(page_title="UAE Service Course", page_icon="🔧", layout="wide")
 
 # --- HÄMTA API-NYCKLAR SÄKERT ---
-# Vi hämtar dessa först så de finns tillgängliga i hela programmet
 api_key = st.sidebar.text_input("Gemini API Key", type="password")
 garmin_user = st.sidebar.text_input("Garmin Email")
 garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
 
 # --- FUNKTIONER ---
 def test_google_connection(key):
-    """En liten funktion för att testa vilken hjärna vi kan nå"""
     try:
         genai.configure(api_key=key)
-        # Vi listar modeller för att se vad servern ser
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         return True, models
     except Exception as e:
         return False, str(e)
 
-# --- KLASS: GARMIN WORKOUT CREATOR ---
+# --- KLASS: GARMIN WORKOUT CREATOR (UPPDATERAD MED MANUAL OVERRIDE) ---
 class GarminWorkoutCreator:
     def __init__(self, email, password):
         self.client = None
@@ -78,11 +75,26 @@ class GarminWorkoutCreator:
             "workoutName": f"UAE AI: {plan.get('name', 'Pass')}",
             "steps": steps
         }
+
+        # --- MANUAL OVERRIDE START ---
+        # Här försöker vi ladda upp. Om 'create_workout' saknas (gammal version),
+        # gör vi det manuellt med samma inloggade session.
         try:
-            self.client.create_workout(payload)
+            # Försök den "rätta" vägen först
+            if hasattr(self.client, 'create_workout'):
+                self.client.create_workout(payload)
+            else:
+                # MANUELL VÄG: Vi använder den inbyggda sessionen (req)
+                upload_url = "https://connect.garmin.com/workout-service/workout"
+                response = self.client.req.post(upload_url, json=payload)
+                if response.status_code not in [200, 201]:
+                    return False, f"Garmin Error {response.status_code}: {response.text}"
+            
             return True, f"Passet '{payload['workoutName']}' skapat!"
+            
         except Exception as e:
             return False, str(e)
+        # --- MANUAL OVERRIDE SLUT ---
 
 # --- KLASS: AI & LOGIK ---
 class SmartCoachBrain:
@@ -92,7 +104,7 @@ class SmartCoachBrain:
             try:
                 self.history = pd.read_csv(DATA_FILE)
                 if 'distance_km' not in self.history.columns: self.history['distance_km'] = 0
-            except: pass # Börja om om filen är trasig
+            except: pass 
 
     def save_workout(self, name, tss, km):
         entry = pd.DataFrame({"date": [str(datetime.date.today())], "tss": [tss], "activity_name": [name], "distance_km": [km]})
@@ -130,8 +142,8 @@ with tab1:
             
             try:
                 genai.configure(api_key=api_key)
-                # Vi försöker med Flash först, annars faller vi tillbaka
-                model_name = 'gemini-3-flash-preview'
+                # Vi använder den nyaste modellen du har tillgång till
+                model_name = 'gemini-2.0-flash'
                 model = genai.GenerativeModel(model_name)
                 
                 prompt = f"""
@@ -153,7 +165,7 @@ with tab1:
                     status_text.error(f"Garmin fel: {msg}")
                     
             except Exception as e:
-                status_text.error(f"AI Fel: {e}. Gå till fliken Felsökning!")
+                status_text.error(f"Ett fel uppstod: {e}. Gå till felsökning.")
 
 with tab2:
     st.write(f"Total distans: {int(total_km)} km. (Service-modulen är aktiv i bakgrunden)")
