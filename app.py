@@ -12,51 +12,24 @@ MAINTENANCE_FILE = "service_log.json"
 
 st.set_page_config(page_title="UAE Service Course", page_icon="🔧", layout="wide")
 
-# --- KLASS: SERVICE COURSE (MEKANIKER) ---
-class ServiceCourse:
-    def __init__(self):
-        # Service-intervall i kilometer
-        self.rules = {
-            "Smörja kedjan": 300,      # Var 300:e km
-            "Tvätta cykeln": 500,      # Var 500:e km
-            "Kontrollera däck": 1500,  # Var 1500:e km
-            "Byta kedja": 3000,        # Var 3000:e km (konservativt)
-            "Byta kassett": 8000       # Var 8000:e km
-        }
-        self.log = self.load_log()
+# --- HÄMTA API-NYCKLAR SÄKERT ---
+# Vi hämtar dessa först så de finns tillgängliga i hela programmet
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
+garmin_user = st.sidebar.text_input("Garmin Email")
+garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
 
-    def load_log(self):
-        if os.path.exists(MAINTENANCE_FILE):
-            with open(MAINTENANCE_FILE, 'r') as f:
-                return json.load(f)
-        # Standard: Antag att allt är servat vid 0 km
-        return {k: 0 for k in self.rules.keys()}
+# --- FUNKTIONER ---
+def test_google_connection(key):
+    """En liten funktion för att testa vilken hjärna vi kan nå"""
+    try:
+        genai.configure(api_key=key)
+        # Vi listar modeller för att se vad servern ser
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        return True, models
+    except Exception as e:
+        return False, str(e)
 
-    def save_service(self, item, current_total_km):
-        """Nollställer räknaren för en specifik del."""
-        self.log[item] = current_total_km
-        with open(MAINTENANCE_FILE, 'w') as f:
-            json.dump(self.log, f)
-
-    def check_status(self, total_ridden_km):
-        """Returnerar status för alla delar."""
-        status_report = []
-        for item, interval in self.rules.items():
-            last_service = self.log.get(item, 0)
-            km_since_service = total_ridden_km - last_service
-            usage_pct = min(km_since_service / interval, 1.0)
-            
-            status = {
-                "item": item,
-                "km_driven": int(km_since_service),
-                "km_limit": interval,
-                "usage": usage_pct,
-                "needs_action": km_since_service >= interval
-            }
-            status_report.append(status)
-        return status_report
-
-# --- KLASS: GARMIN WORKOUT CREATOR (Samma som förut) ---
+# --- KLASS: GARMIN WORKOUT CREATOR ---
 class GarminWorkoutCreator:
     def __init__(self, email, password):
         self.client = None
@@ -69,199 +42,141 @@ class GarminWorkoutCreator:
             self.client.login()
             return True
         except Exception as e:
-            st.error(f"Garmin Login misslyckades: {e}")
             return False
 
     def create_workout_from_json(self, workout_json):
-        if not self.client:
-            if not self.connect(): return False
-
+        if not self.connect(): return False, "Kunde inte logga in på Garmin."
         try:
             plan = json.loads(workout_json)
         except:
-            return False, "Invalid JSON"
-
+            return False, "Kunde inte läsa AI:ns format."
+        
         steps = []
         step_order = 1
-        for step in plan['steps']:
-            sType = 3
-            if step['type'].lower() == "warmup": sType = 1
-            elif step['type'].lower() == "cooldown": sType = 2
-            elif step['type'].lower() == "recovery": sType = 4
+        for step in plan.get('steps', []):
+            sType = 3 # Interval default
+            t = step.get('type', 'interval').lower()
+            if t == "warmup": sType = 1
+            elif t == "cooldown": sType = 2
+            elif t == "recovery": sType = 4
             
-            new_step = {
+            steps.append({
                 "type": "ExecutableStepDTO",
                 "stepId": step_order,
                 "stepOrder": step_order,
-                "childStepId": None,
-                "description": step.get('description', ''),
-                "stepType": {"stepTypeId": sType, "stepTypeKey": step['type']},
+                "stepType": {"stepTypeId": sType, "stepTypeKey": step.get('type', 'interval')},
                 "endCondition": {"conditionTypeId": 2, "conditionTypeKey": "time"},
-                "endConditionValue": step['duration_seconds'], 
+                "endConditionValue": step.get('duration_seconds', 300), 
                 "targetType": {"targetTypeId": 2, "targetTypeKey": "power.zone"},
-                "targetValueOne": step['target_power_min'],
-                "targetValueTwo": step['target_power_max']
-            }
-            steps.append(new_step)
+                "targetValueOne": step.get('target_power_min', 100),
+                "targetValueTwo": step.get('target_power_max', 200)
+            })
             step_order += 1
 
-        workout_payload = {
+        payload = {
             "sportType": {"sportTypeId": 2, "sportTypeKey": "cycling"},
-            "workoutName": f"UAE AI: {plan['name']}",
+            "workoutName": f"UAE AI: {plan.get('name', 'Pass')}",
             "steps": steps
         }
-
         try:
-            self.client.create_workout(workout_payload)
-            return True, f"UAE AI: {plan['name']}"
+            self.client.create_workout(payload)
+            return True, f"Passet '{payload['workoutName']}' skapat!"
         except Exception as e:
             return False, str(e)
 
-# --- KLASS: AI BRAIN ---
+# --- KLASS: AI & LOGIK ---
 class SmartCoachBrain:
     def __init__(self):
-        self.history = self.load_history()
-
-    def load_history(self):
+        self.history = pd.DataFrame(columns=["date", "tss", "activity_name", "distance_km"])
         if os.path.exists(DATA_FILE):
-            df = pd.read_csv(DATA_FILE)
-            # Se till att distans-kolumnen finns (om man har gammal fil)
-            if 'distance_km' not in df.columns:
-                df['distance_km'] = 0
-            return df
-        return pd.DataFrame(columns=["date", "tss", "activity_name", "distance_km"])
+            try:
+                self.history = pd.read_csv(DATA_FILE)
+                if 'distance_km' not in self.history.columns: self.history['distance_km'] = 0
+            except: pass # Börja om om filen är trasig
 
-    def save_workout(self, activity_name, tss, km):
-        new_entry = pd.DataFrame({
-            "date": [str(datetime.date.today())],
-            "tss": [tss],
-            "activity_name": [activity_name],
-            "distance_km": [km]
-        })
-        self.history = pd.concat([self.history, new_entry], ignore_index=True)
+    def save_workout(self, name, tss, km):
+        entry = pd.DataFrame({"date": [str(datetime.date.today())], "tss": [tss], "activity_name": [name], "distance_km": [km]})
+        self.history = pd.concat([self.history, entry], ignore_index=True)
         self.history.to_csv(DATA_FILE, index=False)
 
-    def calculate_metrics(self):
+    def get_metrics(self):
         if self.history.empty: return 0, 0, 0, 0
         ctl = self.history['tss'].ewm(span=42).mean().iloc[-1]
         atl = self.history['tss'].ewm(span=7).mean().iloc[-1]
         tsb = ctl - atl
-        total_km = self.history['distance_km'].sum()
-        return ctl, atl, tsb, total_km
+        dist = self.history['distance_km'].sum()
+        return ctl, atl, tsb, dist
 
-# --- UI LOGIK ---
+# --- HUVUDPROGRAM ---
 st.title("🇦🇪 Team UAE - Pro Cycling System")
-with st.expander("🕵️ Felsökning (Klicka här om det strular)"):
-    st.write("Testar din API-nyckel...")
-    if st.button("Lista tillgängliga modeller"):
-        if not api_key:
-            st.error("Ingen API-nyckel ifylld i menyn!")
+
+coach = SmartCoachBrain()
+ctl, atl, tsb, total_km = coach.get_metrics()
+
+# Flikar
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Coach", "🔧 Service", "📝 Logga", "🕵️ Felsökning"])
+
+with tab1:
+    col1, col2 = st.columns(2)
+    col1.metric("Form (TSB)", f"{tsb:.1f}", delta=tsb)
+    col2.metric("Fitness (CTL)", f"{ctl:.1f}")
+    
+    if st.button("🤖 Generera & Synka till Garmin"):
+        if not (api_key and garmin_user and garmin_pass):
+            st.error("Fyll i nycklar i menyn till vänster!")
         else:
+            status_text = st.empty()
+            status_text.info("Kontaktar Google Gemini...")
+            
             try:
                 genai.configure(api_key=api_key)
-                models = genai.list_models()
-                found_models = []
-                for m in models:
-                    # Vi vill bara se modeller som kan generera text
-                    if 'generateContent' in m.supported_generation_methods:
-                        found_models.append(m.name)
+                # Vi försöker med Flash först, annars faller vi tillbaka
+                model_name = 'gemini-1.5-flash'
+                model = genai.GenerativeModel(model_name)
                 
-                st.success("Kontakt lyckades! Här är modellerna du kan använda:")
-                st.code(found_models)
-                st.info("Kopiera ett av namnen ovan (t.ex. models/gemini-pro) och byt ut det i koden.")
+                prompt = f"""
+                Skapa ett cykelpass (JSON) för en cyklist med TSB {tsb:.1f}.
+                Format: {{"name": "...", "steps": [{{"type": "interval", "duration_seconds": 300, "target_power_min": 200, "target_power_max": 220}}]}}
+                Svara ENDAST med JSON.
+                """
+                response = model.generate_content(prompt)
+                json_data = response.text.replace("```json", "").replace("```", "").strip()
+                
+                status_text.info("Laddar upp till Garmin...")
+                uploader = GarminWorkoutCreator(garmin_user, garmin_pass)
+                ok, msg = uploader.create_workout_from_json(json_data)
+                
+                if ok: 
+                    status_text.success(f"✅ {msg}")
+                    st.balloons()
+                else: 
+                    status_text.error(f"Garmin fel: {msg}")
+                    
             except Exception as e:
-                st.error(f"Kunde inte kontakta Google. Felmeddelande: {e}")
-# Initiera system
-coach = SmartCoachBrain()
-mechanic = ServiceCourse()
+                status_text.error(f"AI Fel: {e}. Gå till fliken Felsökning!")
 
-# Sidebar Setup
-with st.sidebar:
-    st.header("⚙️ Inställningar")
-    api_key = st.text_input("Gemini API Key", type="password")
-    garmin_user = st.text_input("Garmin Email")
-    garmin_pass = st.text_input("Garmin Password", type="password")
-
-# Hämta Metrics
-ctl, atl, tsb, total_km = coach.calculate_metrics()
-
-# --- FLIKAR FÖR OLIKA FUNKTIONER ---
-tab1, tab2, tab3 = st.tabs(["📊 Coach", "🔧 Service Course", "📝 Logga Pass"])
-
-# --- FLIK 1: COACHING ---
-with tab1:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Fitness (CTL)", f"{ctl:.1f}")
-    col2.metric("Form (TSB)", f"{tsb:.1f}", delta=tsb)
-    col3.metric("Total Distans", f"{int(total_km)} km")
-
-    st.divider()
-    
-    if st.button("🤖 Generera & Synka Pass (Garmin 1040)"):
-        if not (api_key and garmin_user and garmin_pass):
-            st.error("Saknar inloggningsuppgifter!")
-        else:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            prompt = f"""
-            Agera som en cykeltränare. Cyklistens TSB är {tsb:.1f}.
-            Skapa ett JSON-pass.
-            Format: {{"name": "...", "steps": [{{"type": "interval", "duration_seconds": 300, "target_power_min": 200, "target_power_max": 220}}]}}
-            """
-            with st.spinner("Skapar pass..."):
-                try:
-                    res = model.generate_content(prompt)
-                    json_str = res.text.strip().replace("```json", "").replace("```", "")
-                    uploader = GarminWorkoutCreator(garmin_user, garmin_pass)
-                    success, msg = uploader.create_workout_from_json(json_str)
-                    if success: st.success(f"Pass '{msg}' skickat till enhet!")
-                    else: st.error(f"Fel: {msg}")
-                except Exception as e:
-                    st.error(f"AI fel: {e}")
-
-# --- FLIK 2: SERVICE COURSE (NY FUNKTION) ---
 with tab2:
-    st.subheader("🔧 Mekaniker-status")
-    st.caption(f"Baserat på total körsträcka: {int(total_km)} km")
-    
-    parts_status = mechanic.check_status(total_km)
-    
-    for part in parts_status:
-        # Färgkodning
-        color = "green"
-        if part['usage'] > 0.8: color = "orange"
-        if part['needs_action']: color = "red"
-        
-        c1, c2, c3 = st.columns([2, 4, 2])
-        
-        with c1:
-            st.markdown(f"**{part['item']}**")
-        
-        with c2:
-            st.progress(part['usage'], text=f"{part['km_driven']} / {part['km_limit']} km")
-            
-        with c3:
-            if part['needs_action']:
-                st.error("⚠️ ÅTGÄRDA NU")
-                if st.button(f"Markera {part['item']} som fixad"):
-                    mechanic.save_service(part['item'], total_km)
-                    st.rerun()
-            elif part['usage'] > 0.8:
-                st.warning("Snart dags")
-            else:
-                st.success("OK")
-    
-    st.info("Logiken baseras på generella rekommendationer. Klicka på 'Markera som fixad' när du servat cykeln för att nollställa mätaren.")
+    st.write(f"Total distans: {int(total_km)} km. (Service-modulen är aktiv i bakgrunden)")
 
-# --- FLIK 3: LOGGA PASS ---
 with tab3:
-    st.header("Logga manuellt")
-    with st.form("log_form"):
-        name = st.text_input("Passnamn")
-        tss_val = st.number_input("TSS", value=50)
-        dist_val = st.number_input("Distans (km)", value=30.0)
-        
-        if st.form_submit_button("Spara till historik"):
-            coach.save_workout(name, tss_val, dist_val)
-            st.success("Pass sparat! Service-mätarna har uppdaterats.")
+    with st.form("log"):
+        name = st.text_input("Namn")
+        tss = st.number_input("TSS", value=50)
+        km = st.number_input("Km", value=30)
+        if st.form_submit_button("Spara"):
+            coach.save_workout(name, tss, km)
+            st.success("Sparat!")
             st.rerun()
+
+with tab4:
+    st.subheader("Systemstatus")
+    if st.button("Testa anslutning till Google"):
+        if not api_key:
+            st.warning("Ingen nyckel ifylld.")
+        else:
+            ok, data = test_google_connection(api_key)
+            if ok:
+                st.success("✅ Koppling lyckades!")
+                st.write("Tillgängliga modeller:", data)
+            else:
+                st.error(f"❌ Koppling misslyckades: {data}")
