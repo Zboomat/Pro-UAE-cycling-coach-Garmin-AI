@@ -151,7 +151,26 @@ class SmartCoachBrain:
 
 # --- UI LOGIK ---
 st.title("🇦🇪 Team UAE - Pro Cycling System")
-
+with st.expander("🕵️ Felsökning (Klicka här om det strular)"):
+    st.write("Testar din API-nyckel...")
+    if st.button("Lista tillgängliga modeller"):
+        if not api_key:
+            st.error("Ingen API-nyckel ifylld i menyn!")
+        else:
+            try:
+                genai.configure(api_key=api_key)
+                models = genai.list_models()
+                found_models = []
+                for m in models:
+                    # Vi vill bara se modeller som kan generera text
+                    if 'generateContent' in m.supported_generation_methods:
+                        found_models.append(m.name)
+                
+                st.success("Kontakt lyckades! Här är modellerna du kan använda:")
+                st.code(found_models)
+                st.info("Kopiera ett av namnen ovan (t.ex. models/gemini-pro) och byt ut det i koden.")
+            except Exception as e:
+                st.error(f"Kunde inte kontakta Google. Felmeddelande: {e}")
 # Initiera system
 coach = SmartCoachBrain()
 mechanic = ServiceCourse()
