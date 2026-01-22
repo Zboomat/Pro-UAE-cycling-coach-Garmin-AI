@@ -183,7 +183,7 @@ with tab1:
             st.error("Saknar inloggningsuppgifter!")
         else:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-pro')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             prompt = f"""
             Agera som en cykeltränare. Cyklistens TSB är {tsb:.1f}.
             Skapa ett JSON-pass.
