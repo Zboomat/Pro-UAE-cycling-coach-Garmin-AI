@@ -8,55 +8,61 @@ from garminconnect import Garmin
 
 # --- KONFIGURATION ---
 DATA_FILE = "training_history.csv"
-MAINTENANCE_FILE = "service_log.json"
 
-st.set_page_config(page_title="UAE Service Course", page_icon="🔧", layout="wide")
+st.set_page_config(page_title="UAE Coach", page_icon="🚴", layout="wide")
 
-# --- HÄMTA API-NYCKLAR SÄKERT ---
+# --- HÄMTA NYCKLAR ---
 api_key = st.secrets.get("api_key", None)
 garmin_user = st.secrets.get("garmin_user", None)
 garmin_pass = st.secrets.get("garmin_pass", None)
 
-# Fallback om secrets inte funkar (så man kan skriva i menyn)
 if not api_key: api_key = st.sidebar.text_input("Gemini API Key", type="password")
 if not garmin_user: garmin_user = st.sidebar.text_input("Garmin Email")
 if not garmin_pass: garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
 
-# --- FUNKTIONER ---
-def test_google_connection(key):
+# --- NY FUNKTION: HITTA MODELL AUTOMATISKT ---
+def get_working_model(key):
+    """Frågar Google vilka modeller som finns och väljer den bästa."""
     try:
         genai.configure(api_key=key)
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        return True, models
+        # Lista alla modeller
+        all_models = genai.list_models()
+        # Spara bara de som kan generera text
+        valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
+        
+        if not valid_models:
+            return None, "Inga modeller tillgängliga för detta konto."
+            
+        # Prioritera Flash-modeller om de finns
+        best_model = next((m for m in valid_models if 'flash' in m and 'lite' not in m), valid_models[0])
+        return best_model, None
+        
     except Exception as e:
-        return False, str(e)
+        return None, f"Kunde inte kontakta Google. Är nyckeln rätt? Fel: {str(e)}"
 
-# --- KLASS: GARMIN WORKOUT CREATOR (MED MANUAL OVERRIDE) ---
+# --- GARMIN UPLOADER (MANUAL MODE) ---
 class GarminWorkoutCreator:
     def __init__(self, email, password):
         self.client = None
         self.email = email
         self.password = password
 
-    def connect(self):
+    def create_workout(self, json_data):
         try:
             self.client = Garmin(self.email, self.password)
             self.client.login()
-            return True
-        except Exception as e:
-            return False
-
-    def create_workout_from_json(self, workout_json):
-        if not self.connect(): return False, "Kunde inte logga in på Garmin."
-        try:
-            plan = json.loads(workout_json)
         except:
-            return False, "Kunde inte läsa AI:ns format."
-        
+            return False, "Login misslyckades."
+
+        try:
+            plan = json.loads(json_data)
+        except:
+            return False, "Felaktig JSON från AI."
+
         steps = []
         step_order = 1
         for step in plan.get('steps', []):
-            sType = 3 
+            sType = 3
             t = step.get('type', 'interval').lower()
             if t == "warmup": sType = 1
             elif t == "cooldown": sType = 2
@@ -81,115 +87,56 @@ class GarminWorkoutCreator:
             "steps": steps
         }
 
-        # --- MANUAL OVERRIDE (Fixar Garmin-felet) ---
         try:
-            # Vi testar om funktionen finns, annars gör vi det manuellt
-            if hasattr(self.client, 'create_workout'):
-                self.client.create_workout(payload)
-            else:
-                upload_url = "https://connect.garmin.com/workout-service/workout"
-                # Använd sessionen direkt
-                response = self.client.req.post(upload_url, json=payload)
-                if response.status_code not in [200, 201]:
-                    return False, f"Garmin Error {response.status_code}: {response.text}"
-            
-            return True, f"Passet '{payload['workoutName']}' skapat!"
+            # Manuell POST för att undvika versionsfel
+            url = "https://connect.garmin.com/workout-service/workout"
+            res = self.client.req.post(url, json=payload)
+            if res.status_code in [200, 201]:
+                return True, f"Passet '{payload['workoutName']}' skapat!"
+            return False, f"Garmin error: {res.status_code}"
         except Exception as e:
             return False, str(e)
 
-# --- KLASS: AI & LOGIK ---
-class SmartCoachBrain:
-    def __init__(self):
-        self.history = pd.DataFrame(columns=["date", "tss", "activity_name", "distance_km"])
-        if os.path.exists(DATA_FILE):
-            try:
-                self.history = pd.read_csv(DATA_FILE)
-                if 'distance_km' not in self.history.columns: self.history['distance_km'] = 0
-            except: pass 
+# --- APP LOGIK ---
+st.title("🇦🇪 Team UAE - Autopilot")
 
-    def save_workout(self, name, tss, km):
-        entry = pd.DataFrame({"date": [str(datetime.date.today())], "tss": [tss], "activity_name": [name], "distance_km": [km]})
-        self.history = pd.concat([self.history, entry], ignore_index=True)
-        self.history.to_csv(DATA_FILE, index=False)
-
-    def get_metrics(self):
-        if self.history.empty: return 0, 0, 0, 0
-        ctl = self.history['tss'].ewm(span=42).mean().iloc[-1]
-        atl = self.history['tss'].ewm(span=7).mean().iloc[-1]
-        tsb = ctl - atl
-        dist = self.history['distance_km'].sum()
-        return ctl, atl, tsb, dist
-
-# --- HUVUDPROGRAM ---
-st.title("🇦🇪 Team UAE - Pro Cycling System")
-
-coach = SmartCoachBrain()
-ctl, atl, tsb, total_km = coach.get_metrics()
-
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Coach", "🔧 Service", "📝 Logga", "🕵️ Felsökning"])
-
-with tab1:
-    col1, col2 = st.columns(2)
-    col1.metric("Form (TSB)", f"{tsb:.1f}", delta=tsb)
-    col2.metric("Fitness (CTL)", f"{ctl:.1f}")
-    
-    if st.button("🤖 Generera & Synka till Garmin"):
-        if not (api_key and garmin_user and garmin_pass):
-            st.error("Fyll i nycklar i menyn till vänster!")
-        else:
-            status_text = st.empty()
-            status_text.info("Kontaktar Google Gemini (1.5 Flash)...")
+if st.button("🚀 Generera & Synka"):
+    if not (api_key and garmin_user and garmin_pass):
+        st.error("Saknar nycklar!")
+    else:
+        status = st.empty()
+        
+        # 1. Hitta modell
+        status.info("Letar efter fungerande AI-modell...")
+        model_name, error = get_working_model(api_key)
+        
+        if not model_name:
+            st.error(f"Kritiskt fel: {error}")
+            st.stop()
             
-            try:
-                genai.configure(api_key=api_key)
-                
-                # SÄKER MODELL:
-                model_name = 'gemini-1.5-flash'
-                model = genai.GenerativeModel(model_name)
-                
-                prompt = f"""
-                Skapa ett cykelpass (JSON) för en cyklist med TSB {tsb:.1f}.
-                Format: {{"name": "...", "steps": [{{"type": "interval", "duration_seconds": 300, "target_power_min": 200, "target_power_max": 220}}]}}
+        status.success(f"Hittade modell: {model_name}")
+        
+        # 2. Generera
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content("""
+                Skapa ett cykelpass (JSON). 
+                Format: {"name": "Testpass", "steps": [{"type": "interval", "duration_seconds": 300, "target_power_min": 200, "target_power_max": 220}]}
                 Svara ENDAST med JSON.
-                """
-                response = model.generate_content(prompt)
-                json_data = response.text.replace("```json", "").replace("```", "").strip()
-                
-                status_text.info("Laddar upp till Garmin...")
-                uploader = GarminWorkoutCreator(garmin_user, garmin_pass)
-                ok, msg = uploader.create_workout_from_json(json_data)
-                
-                if ok: 
-                    status_text.success(f"✅ {msg}")
-                    st.balloons()
-                else: 
-                    status_text.error(f"Garmin fel: {msg}")
-                    
-            except Exception as e:
-                status_text.error(f"Ett fel uppstod: {e}")
-
-with tab2:
-    st.write(f"Total distans: {int(total_km)} km.")
-
-with tab3:
-    with st.form("log"):
-        name = st.text_input("Namn")
-        tss = st.number_input("TSS", value=50)
-        km = st.number_input("Km", value=30)
-        if st.form_submit_button("Spara"):
-            coach.save_workout(name, tss, km)
-            st.success("Sparat!")
-            st.rerun()
-
-with tab4:
-    st.subheader("Systemstatus")
-    if st.button("Testa anslutning till Google"):
-        if not api_key:
-            st.warning("Ingen nyckel ifylld.")
-        else:
-            ok, data = test_google_connection(api_key)
+            """)
+            json_str = response.text.replace("```json", "").replace("```", "").strip()
+            
+            # 3. Ladda upp
+            status.info("Laddar upp till Garmin...")
+            uploader = GarminWorkoutCreator(garmin_user, garmin_pass)
+            ok, msg = uploader.create_workout(json_str)
+            
             if ok:
-                st.success("✅ Koppling lyckades!")
-                st.write("Tillgängliga modeller:", data)
+                st.balloons()
+                status.success(f"✅ {msg}")
             else:
-                st.error(f"❌ Koppling misslyckades: {data}")
+                status.error(msg)
+                
+        except Exception as e:
+            st.error(f"Ett fel uppstod: {e}")
