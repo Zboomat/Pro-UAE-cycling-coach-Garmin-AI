@@ -26,7 +26,7 @@ def test_google_connection(key):
     except Exception as e:
         return False, str(e)
 
-# --- KLASS: GARMIN WORKOUT CREATOR (UPPDATERAD MED MANUAL OVERRIDE) ---
+# --- KLASS: GARMIN WORKOUT CREATOR (MED MANUAL OVERRIDE) ---
 class GarminWorkoutCreator:
     def __init__(self, email, password):
         self.client = None
@@ -51,7 +51,7 @@ class GarminWorkoutCreator:
         steps = []
         step_order = 1
         for step in plan.get('steps', []):
-            sType = 3 # Interval default
+            sType = 3 
             t = step.get('type', 'interval').lower()
             if t == "warmup": sType = 1
             elif t == "cooldown": sType = 2
@@ -76,25 +76,20 @@ class GarminWorkoutCreator:
             "steps": steps
         }
 
-        # --- MANUAL OVERRIDE START ---
-        # Här försöker vi ladda upp. Om 'create_workout' saknas (gammal version),
-        # gör vi det manuellt med samma inloggade session.
+        # --- MANUAL OVERRIDE (Fixar Garmin-felet) ---
         try:
-            # Försök den "rätta" vägen först
             if hasattr(self.client, 'create_workout'):
                 self.client.create_workout(payload)
             else:
-                # MANUELL VÄG: Vi använder den inbyggda sessionen (req)
+                # Manuell uppladdning om funktionen saknas
                 upload_url = "https://connect.garmin.com/workout-service/workout"
                 response = self.client.req.post(upload_url, json=payload)
                 if response.status_code not in [200, 201]:
                     return False, f"Garmin Error {response.status_code}: {response.text}"
             
             return True, f"Passet '{payload['workoutName']}' skapat!"
-            
         except Exception as e:
             return False, str(e)
-        # --- MANUAL OVERRIDE SLUT ---
 
 # --- KLASS: AI & LOGIK ---
 class SmartCoachBrain:
@@ -125,7 +120,6 @@ st.title("🇦🇪 Team UAE - Pro Cycling System")
 coach = SmartCoachBrain()
 ctl, atl, tsb, total_km = coach.get_metrics()
 
-# Flikar
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Coach", "🔧 Service", "📝 Logga", "🕵️ Felsökning"])
 
 with tab1:
@@ -138,12 +132,13 @@ with tab1:
             st.error("Fyll i nycklar i menyn till vänster!")
         else:
             status_text = st.empty()
-            status_text.info("Kontaktar Google Gemini...")
+            status_text.info("Kontaktar Google Gemini (Lite)...")
             
             try:
                 genai.configure(api_key=api_key)
-                # Vi använder den nyaste modellen du har tillgång till
-                model_name = 'gemini-2.0-flash'
+                
+                # HÄR ÄR ÄNDRINGEN TILL LITE-MODELLEN:
+                model_name = 'gemini-2.0-flash-lite-preview-02-05'
                 model = genai.GenerativeModel(model_name)
                 
                 prompt = f"""
@@ -165,10 +160,10 @@ with tab1:
                     status_text.error(f"Garmin fel: {msg}")
                     
             except Exception as e:
-                status_text.error(f"Ett fel uppstod: {e}. Gå till felsökning.")
+                status_text.error(f"Ett fel uppstod: {e}. (Om det är 429 Quota, vänta 5 min!)")
 
 with tab2:
-    st.write(f"Total distans: {int(total_km)} km. (Service-modulen är aktiv i bakgrunden)")
+    st.write(f"Total distans: {int(total_km)} km.")
 
 with tab3:
     with st.form("log"):
