@@ -2,39 +2,48 @@ import streamlit as st
 import pandas as pd
 import json
 import google.generativeai as genai
-from garminconnect import Garmin
 
-# --- KONFIGURATION ---
+# --- 1. KONFIGURATION (Måste vara absolut först) ---
 st.set_page_config(page_title="UAE Coach", page_icon="🚴")
 
-# --- HÄMTA NYCKLAR ---
-# Vi försöker hämta från Secrets först, annars Sidebar
+# --- 2. SÄKER IMPORT AV GARMIN ---
+# Detta block förhindrar att appen kraschar direkt om biblioteket saknas
+try:
+    from garminconnect import Garmin
+    GARMIN_AVAILABLE = True
+except ImportError as e:
+    GARMIN_AVAILABLE = False
+    GARMIN_ERROR = str(e)
+except Exception as e:
+    GARMIN_AVAILABLE = False
+    GARMIN_ERROR = str(e)
+
+# --- 3. HÄMTA NYCKLAR ---
 api_key = st.secrets.get("api_key")
 garmin_user = st.secrets.get("garmin_user")
 garmin_pass = st.secrets.get("garmin_pass")
 
+# Fallback för Sidebar
 if not api_key: api_key = st.sidebar.text_input("Gemini API Key", type="password")
 if not garmin_user: garmin_user = st.sidebar.text_input("Garmin Email")
 if not garmin_pass: garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
 
-# --- FUNKTIONER ---
+# --- 4. FUNKTIONER ---
 
 def get_ai_workout(key):
-    """Hämtar pass från Google Gemini (1.5 Flash)."""
+    """Hämtar pass från AI (Gemini 1.5 Flash)."""
     try:
         genai.configure(api_key=key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = """
-        Skapa ett professionellt cykelpass.
-        Svara ENDAST med JSON i följande format (inget annat prat):
+        Du är cykelcoach. Skapa ett pass.
+        Svara ENDAST med JSON:
         {
-            "name": "Passets Namn",
+            "name": "Passnamn",
             "steps": [
-                {"type": "warmup", "duration_seconds": 600, "target_power_min": 100, "target_power_max": 150},
-                {"type": "interval", "duration_seconds": 300, "target_power_min": 250, "target_power_max": 280},
-                {"type": "recovery", "duration_seconds": 300, "target_power_min": 120, "target_power_max": 140},
-                {"type": "cooldown", "duration_seconds": 600, "target_power_min": 100, "target_power_max": 130}
+                {"type": "warmup", "duration_seconds": 300, "target_power_min": 100, "target_power_max": 150},
+                {"type": "interval", "duration_seconds": 180, "target_power_min": 250, "target_power_max": 280}
             ]
         }
         """
@@ -45,8 +54,11 @@ def get_ai_workout(key):
         st.error(f"AI Fel: {e}")
         return None
 
-def try_upload_to_garmin(user, password, plan):
-    """Försöker ladda upp, men kraschar inte om det misslyckas."""
+def upload_to_garmin(user, password, plan):
+    """Laddar upp till Garmin."""
+    if not GARMIN_AVAILABLE:
+        return False, "Garmin-biblioteket kunde inte laddas."
+        
     try:
         client = Garmin(user, password)
         client.login()
@@ -54,7 +66,7 @@ def try_upload_to_garmin(user, password, plan):
         steps = []
         step_order = 1
         for step in plan.get('steps', []):
-            sType = 3 # Interval
+            sType = 3
             t = step.get('type', 'interval').lower()
             if t == "warmup": sType = 1
             elif t == "cooldown": sType = 2
@@ -82,46 +94,57 @@ def try_upload_to_garmin(user, password, plan):
         # Försök ladda upp
         if hasattr(client, 'create_workout'):
             client.create_workout(payload)
-            return True, "Uppladdat och klart!"
+            return True, "Uppladdat!"
         else:
-            return False, "Funktionen create_workout saknas på servern."
+            # Manuell metod
+            url = "https://connect.garmin.com/workout-service/workout"
+            if hasattr(client, 'session'):
+                 res = client.session.post(url, json=payload)
+            elif hasattr(client, 'req'):
+                 res = client.req.post(url, json=payload)
+            else:
+                 return False, "Kunde inte hitta rätt metod för uppladdning."
+                 
+            if res.status_code in [200, 201]:
+                return True, "Uppladdat manuellt!"
+            return False, f"Felkod: {res.status_code}"
 
     except Exception as e:
         return False, f"Garmin-fel: {str(e)}"
 
-# --- HUVUDPROGRAM ---
-st.title("🇦🇪 UAE Team Emirates - Coach")
-st.write("Skapar personliga pass med Google Gemini AI.")
+# --- 5. HUVUDPROGRAM (UI) ---
+st.title("🇦🇪 UAE Team Emirates - Safe Mode")
+
+# Diagnostik-ruta
+if not GARMIN_AVAILABLE:
+    st.warning(f"⚠️ Garmin-modulen startade inte. Du kan skapa pass, men inte ladda upp automatiskt.\nFelmeddelande: {GARMIN_ERROR}")
+else:
+    st.success("✅ Garmin-modulen är aktiv.")
 
 if st.button("🚀 Generera Pass"):
     if not api_key:
-        st.error("Saknar API-nyckel!")
+        st.error("Ingen API-nyckel hittades.")
     else:
-        with st.spinner("AI designar passet..."):
-            workout_plan = get_ai_workout(api_key)
+        with st.spinner("AI jobbar..."):
+            plan = get_ai_workout(api_key)
             
-        if workout_plan:
-            st.success(f"Pass skapat: {workout_plan.get('name')}")
+        if plan:
+            st.success(f"Pass skapat: {plan.get('name')}")
             
-            # Visa passet visuellt (Plan B)
-            st.subheader("📋 Ditt Pass")
-            df = pd.DataFrame(workout_plan['steps'])
-            # Gör tabellen snyggare
-            if not df.empty:
-                df['Tid (min)'] = df['duration_seconds'] / 60
-                df = df.rename(columns={'type': 'Typ', 'target_power_min': 'Min Watt', 'target_power_max': 'Max Watt'})
-                st.table(df[['Typ', 'Tid (min)', 'Min Watt', 'Max Watt']])
+            # Visa tabell
+            df = pd.DataFrame(plan['steps'])
+            st.table(df)
             
-            # Försök ladda upp till Garmin (Plan A)
-            if garmin_user and garmin_pass:
-                with st.spinner("Försöker synka till Garmin..."):
-                    success, msg = try_upload_to_garmin(garmin_user, garmin_pass, workout_plan)
-                    
-                    if success:
+            # Försök ladda upp
+            if GARMIN_AVAILABLE and garmin_user and garmin_pass:
+                with st.spinner("Laddar upp..."):
+                    ok, msg = upload_to_garmin(garmin_user, garmin_pass, plan)
+                    if ok:
                         st.balloons()
-                        st.success(f"✅ {msg} - Synka din cykeldator nu!")
+                        st.success(f"✅ {msg}")
                     else:
-                        st.warning(f"⚠️ Kunde inte ladda upp till molnet just nu ({msg}).")
-                        st.info("💡 Men ingen fara! Du kan köra passet baserat på tabellen ovan.")
+                        st.error(f"Uppladdning misslyckades: {msg}")
+            elif not GARMIN_AVAILABLE:
+                st.info("Kör passet manuellt baserat på tabellen ovan.")
             else:
                 st.info("Fyll i Garmin-uppgifter i Secrets för automatisk uppladdning.")
