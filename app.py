@@ -2,175 +2,140 @@ import streamlit as st
 import pandas as pd
 import json
 import sys
+import os
 
 # --- 1. SÄKER SETUP ---
-st.set_page_config(page_title="UAE System Check", page_icon="🏥", layout="wide")
-st.title("🏥 UAE Team Emirates - System Diagnostik")
+st.set_page_config(page_title="UAE System Fix", page_icon="🛠️", layout="wide")
+st.title("🛠️ UAE Team Emirates - Final Fix")
 
-# --- 2. KONTROLLERA INSTALLATIONER ---
-STATUS_DEPS = {"google": False, "garmin": False}
-ERRORS = []
-
-try:
-    import google.generativeai as genai
-    STATUS_DEPS["google"] = True
-except ImportError as e:
-    ERRORS.append(f"Google AI saknas: {e}")
-
-try:
-    from garminconnect import Garmin
-    import garth
-    STATUS_DEPS["garmin"] = True
-    try:
-        import garminconnect
-        garmin_version = garminconnect.__version__
-    except: 
-        garmin_version = "Okänd"
-except ImportError as e:
-    ERRORS.append(f"Garmin/Garth saknas: {e}")
-    garmin_version = "N/A"
-
-# --- 3. HÄMTA NYCKLAR ---
+# --- 2. HÄMTA NYCKLAR ---
 api_key = st.secrets.get("api_key")
 garmin_user = st.secrets.get("garmin_user")
 garmin_pass = st.secrets.get("garmin_pass")
 
 with st.sidebar:
-    st.header("🔑 Inställningar")
+    st.header("Inställningar")
     if not api_key: api_key = st.text_input("Gemini API Key", type="password")
     if not garmin_user: garmin_user = st.text_input("Garmin Email")
     if not garmin_pass: garmin_pass = st.text_input("Garmin Password", type="password")
 
-# --- 4. DEN NYA UNIVERSAL-ADAPTERN ---
-def universal_upload(client, payload):
-    """Provar 4 olika sätt att ladda upp passet beroende på version."""
-    url = "https://connect.garmin.com/workout-service/workout"
-    log = []
-
-    # METOD 1: Officiell funktion (Nyaste versionen)
-    if hasattr(client, 'create_workout'):
-        try:
-            client.create_workout(payload)
-            return True, "Lyckades med Metod 1 (create_workout)"
-        except Exception as e:
-            log.append(f"Metod 1 fel: {e}")
-    
-    # METOD 2: Garth (Moderna sättet)
-    if hasattr(client, 'garth'):
-        try:
-            res = client.garth.client.post(url, json=payload)
-            if res.status_code in [200, 201]: return True, "Lyckades med Metod 2 (Garth)"
-            else: log.append(f"Metod 2 felkod: {res.status_code}")
-        except Exception as e:
-            log.append(f"Metod 2 krasch: {e}")
-
-    # METOD 3: Session (Gamla sättet)
-    if hasattr(client, 'session'):
-        try:
-            res = client.session.post(url, json=payload)
-            if res.status_code in [200, 201]: return True, "Lyckades med Metod 3 (Session)"
-            else: log.append(f"Metod 3 felkod: {res.status_code}")
-        except Exception as e:
-            log.append(f"Metod 3 krasch: {e}")
-
-    # METOD 4: Req (Urgamla sättet)
-    if hasattr(client, 'req'):
-        try:
-            res = client.req.post(url, json=payload)
-            if res.status_code in [200, 201]: return True, "Lyckades med Metod 4 (Req)"
-        except Exception as e:
-            log.append(f"Metod 4 krasch: {e}")
-
-    return False, "ALLA METODER MISSLYCKADES. Logg: " + "; ".join(log)
-
-# --- 5. TEST-FUNKTIONER ---
-def check_google_connection(key):
-    if not STATUS_DEPS["google"]: return False, "Bibliotek saknas"
+# --- 3. DEN KRITISKA GARMIN-KOPPLINGEN ---
+def get_garmin_client(user, password):
+    """Loggar in och konfigurerar Garth korrekt för molnet."""
     try:
-        genai.configure(api_key=key)
-        models = list(genai.list_models())
-        flash_model = next((m.name for m in models if 'flash' in m.name), "Ingen Flash hittad")
-        return True, f"OK! Vald modell: {flash_model}"
-    except Exception as e:
-        return False, str(e)
+        from garminconnect import Garmin
+        import garth
 
-def check_garmin_connection(user, password):
-    if not STATUS_DEPS["garmin"]: return False, "Bibliotek saknas"
-    try:
-        # Konfigurera garth för att undvika token-fel
-        try:
-            garth.configure(save_strategy="fs", home_dir="/tmp")
-        except: pass
-        
+        # --- HÄR ÄR LÖSNINGEN ---
+        # Vi tvingar Garth att spara tokens i /tmp istället för hemkatalogen
+        # Detta löser problemet med skrivrättigheter på Streamlit Cloud
+        garth.configure(save_strategy="fs", home_dir="/tmp")
+        # ------------------------
+
         client = Garmin(user, password)
         client.login()
-        return True, f"OK! Inloggad (Ver: {garmin_version})", client
+        return True, client, "Inloggad & Klar"
     except Exception as e:
-        return False, str(e), None
+        return False, None, str(e)
 
-# --- 6. DASHBOARD UI ---
-col1, col2, col3 = st.columns(3)
+# --- 4. HUVUDPROGRAM ---
+st.write("### Status: Systemkontroll")
 
-# A. GOOGLE STATUS
+col1, col2 = st.columns(2)
+
+# TESTA GOOGLE
 with col1:
-    st.subheader("🤖 1. Google AI")
-    if st.button("Testa Google"):
-        ok, msg = check_google_connection(api_key)
-        if ok: st.success(msg)
-        else: st.error(msg)
+    if st.button("1. Testa Google"):
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            res = model.generate_content("Säg hej")
+            st.success(f"Google svarar: {res.text}")
+        except Exception as e:
+            st.error(f"Google fel: {e}")
 
-# B. GARMIN STATUS
+# KÖR SKARPT (Med felhantering)
 with col2:
-    st.subheader("⌚ 2. Garmin")
-    if st.button("Testa Garmin"):
-        ok, msg, _ = check_garmin_connection(garmin_user, garmin_pass)
-        if ok: st.success(msg)
-        else: st.error(msg)
-
-# C. GENERERA PASS
-with col3:
-    st.subheader("🚀 3. Skapa & Ladda Upp")
-    if st.button("Kör Skarpt!"):
+    if st.button("2. KÖR SKARPT (Generera & Ladda upp)"):
         status = st.empty()
         
-        # 1. Logga in Garmin först
-        status.info("Loggar in på Garmin...")
-        garmin_ok, garmin_msg, client = check_garmin_connection(garmin_user, garmin_pass)
+        # A. Logga in Garmin
+        status.info("Loggar in på Garmin (med /tmp fix)...")
+        ok, client, msg = get_garmin_client(garmin_user, garmin_pass)
         
-        if not garmin_ok:
-            status.error(f"Garmin inloggning misslyckades: {garmin_msg}")
+        if not ok:
+            status.error(f"Inloggning misslyckades: {msg}")
         else:
+            status.success(f"Inloggning OK! ({msg})")
+            
+            # B. Skapa Pass med AI
             try:
-                # 2. Skapa Pass med AI
-                status.info("AI designar passet...")
+                status.info("AI skapar passet...")
+                import google.generativeai as genai
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel('gemini-1.5-flash')
-                res = model.generate_content('Skapa ett cykelpass (JSON). Format: {"name":"Test","steps":[{"type":"interval","duration_seconds":300,"target_power_min":200,"target_power_max":250}]}')
-                clean_json = res.text.replace("```json","").replace("```","").strip()
+                
+                # Enkel prompt för att minimera felkällor
+                prompt = 'Skapa ett cykelpass (JSON). Format: {"name":"UAE Test","steps":[{"type":"interval","duration_seconds":300,"target_power_min":200,"target_power_max":250}]}'
+                res = model.generate_content(prompt)
+                clean_json = res.text.replace("```json", "").replace("```", "").strip()
                 plan = json.loads(clean_json)
+                st.write(f"AI skapade: {plan['name']}")
                 
-                st.info(f"Pass designat: {plan.get('name')}")
+                # C. Bygg Payload (Manuellt för säkerhet)
+                steps = []
+                # Vi hårdkodar ett steg för att testa uppladdningen isolerat
+                steps.append({
+                    "type": "ExecutableStepDTO",
+                    "stepId": 1,
+                    "stepOrder": 1,
+                    "stepType": {"stepTypeId": 3, "stepTypeKey": "interval"}, 
+                    "endCondition": {"conditionTypeId": 2, "conditionTypeKey": "time"},
+                    "endConditionValue": 300, 
+                    "targetType": {"targetTypeId": 2, "targetTypeKey": "power.zone"},
+                    "targetValueOne": 200, 
+                    "targetValueTwo": 250
+                })
                 
-                # 3. Bygg payload
-                steps = [{"type":"ExecutableStepDTO", "stepId":1, "stepOrder":1, "stepType": {"stepTypeId": 3, "stepTypeKey": "interval"}, "endCondition": {"conditionTypeId": 2, "conditionTypeKey": "time"}, "endConditionValue": 300, "targetType": {"targetTypeId": 2, "targetTypeKey": "power.zone"}, "targetValueOne": 200, "targetValueTwo": 250}]
-                payload = {"sportType": {"sportTypeId": 2, "sportTypeKey": "cycling"}, "workoutName": f"UAE AI {pd.Timestamp.now().strftime('%H:%M')}", "steps": steps}
+                payload = {
+                    "sportType": {"sportTypeId": 2, "sportTypeKey": "cycling"},
+                    "workoutName": f"UAE AI {pd.Timestamp.now().strftime('%H:%M:%S')}",
+                    "steps": steps
+                }
                 
-                # 4. ANVÄND UNIVERSAL-ADAPTERN
-                status.info("Laddar upp med Universal-adaptern...")
-                success, upload_msg = universal_upload(client, payload)
-                
-                if success:
-                    st.balloons()
-                    status.success(f"✅ {upload_msg}")
-                    st.success("Passet finns nu i din Garmin Connect!")
-                else:
-                    status.error(f"Uppladdning misslyckades: {upload_msg}")
+                # D. Ladda Upp
+                status.info("Laddar upp till Garmin...")
+                try:
+                    # Vi använder create_workout som ska fungera nu när garth är konfigurerat
+                    if hasattr(client, 'create_workout'):
+                        client.create_workout(payload)
+                        st.balloons()
+                        status.success(f"✅ SUCCÉ! Passet '{payload['workoutName']}' är uppladdat!")
+                    else:
+                        # Fallback om funktionen saknas
+                        url = "https://connect.garmin.com/workout-service/workout"
+                        if hasattr(client, 'garth'):
+                            client.garth.client.post(url, json=payload)
+                            st.balloons()
+                            status.success("✅ SUCCÉ (via Garth)!")
+                        else:
+                            status.error("Kunde inte hitta en uppladdningsmetod.")
+                            
+                except Exception as e:
+                    # Fånga exakt vad Garmin svarar
+                    error_msg = str(e)
+                    if hasattr(e, 'response'):
+                        error_msg += f" | Server Svar: {e.response.text}"
+                    status.error(f"Uppladdningsfel: {error_msg}")
                     
             except Exception as e:
-                status.error(f"Ett oväntat fel uppstod: {e}")
+                status.error(f"AI/Data fel: {e}")
 
-# --- TEKNISK INFO ---
-with st.expander("Visa teknisk info"):
-    st.write(f"Python: {sys.version}")
-    st.write(f"Garmin Ver: {garmin_version}")
-    if ERRORS: st.error(str(ERRORS))
+# --- VISA LOGGAR ---
+with st.expander("Visa filsystem (Debug)"):
+    st.write("Kollar /tmp mappen...")
+    try:
+        st.write(os.listdir("/tmp"))
+    except:
+        st.write("Kunde inte läsa /tmp")
