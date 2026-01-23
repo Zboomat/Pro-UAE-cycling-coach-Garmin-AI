@@ -13,9 +13,14 @@ MAINTENANCE_FILE = "service_log.json"
 st.set_page_config(page_title="UAE Service Course", page_icon="🔧", layout="wide")
 
 # --- HÄMTA API-NYCKLAR SÄKERT ---
-api_key = st.sidebar.text_input("Gemini API Key", type="password")
-garmin_user = st.sidebar.text_input("Garmin Email")
-garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
+api_key = st.secrets.get("api_key", None)
+garmin_user = st.secrets.get("garmin_user", None)
+garmin_pass = st.secrets.get("garmin_pass", None)
+
+# Fallback om secrets inte funkar (så man kan skriva i menyn)
+if not api_key: api_key = st.sidebar.text_input("Gemini API Key", type="password")
+if not garmin_user: garmin_user = st.sidebar.text_input("Garmin Email")
+if not garmin_pass: garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
 
 # --- FUNKTIONER ---
 def test_google_connection(key):
@@ -83,6 +88,7 @@ class GarminWorkoutCreator:
                 self.client.create_workout(payload)
             else:
                 upload_url = "https://connect.garmin.com/workout-service/workout"
+                # Använd sessionen direkt
                 response = self.client.req.post(upload_url, json=payload)
                 if response.status_code not in [200, 201]:
                     return False, f"Garmin Error {response.status_code}: {response.text}"
@@ -132,12 +138,12 @@ with tab1:
             st.error("Fyll i nycklar i menyn till vänster!")
         else:
             status_text = st.empty()
-            status_text.info("Kontaktar Google Gemini (Standard)...")
+            status_text.info("Kontaktar Google Gemini (1.5 Flash)...")
             
             try:
                 genai.configure(api_key=api_key)
                 
-                # --- HÄR ÄR DEN SÄKRA MODELLEN ---
+                # SÄKER MODELL:
                 model_name = 'gemini-1.5-flash'
                 model = genai.GenerativeModel(model_name)
                 
