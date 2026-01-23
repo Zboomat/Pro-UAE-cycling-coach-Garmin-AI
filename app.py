@@ -1,150 +1,116 @@
 import streamlit as st
 import pandas as pd
 import json
-import google.generativeai as genai
+import sys
 
-# --- 1. KONFIGURATION (Måste vara absolut först) ---
-st.set_page_config(page_title="UAE Coach", page_icon="🚴")
+# --- 1. SÄKER SETUP (Kraschar aldrig) ---
+st.set_page_config(page_title="UAE System Check", page_icon="🏥", layout="wide")
+st.title("🏥 UAE Team Emirates - System Diagnostik")
 
-# --- 2. SÄKER IMPORT AV GARMIN ---
-# Detta block förhindrar att appen kraschar direkt om biblioteket saknas
+# --- 2. KONTROLLERA INSTALLATIONER ---
+# Vi försöker importera biblioteken säkert
+STATUS_DEPS = {"google": False, "garmin": False}
+ERRORS = []
+
+try:
+    import google.generativeai as genai
+    STATUS_DEPS["google"] = True
+except ImportError as e:
+    ERRORS.append(f"Google AI saknas: {e}")
+
 try:
     from garminconnect import Garmin
-    GARMIN_AVAILABLE = True
+    STATUS_DEPS["garmin"] = True
+    # Försök se version
+    try:
+        import garminconnect
+        garmin_version = garminconnect.__version__
+    except: 
+        garmin_version = "Okänd"
 except ImportError as e:
-    GARMIN_AVAILABLE = False
-    GARMIN_ERROR = str(e)
-except Exception as e:
-    GARMIN_AVAILABLE = False
-    GARMIN_ERROR = str(e)
+    ERRORS.append(f"Garmin Connect saknas: {e}")
+    garmin_version = "N/A"
 
 # --- 3. HÄMTA NYCKLAR ---
 api_key = st.secrets.get("api_key")
 garmin_user = st.secrets.get("garmin_user")
 garmin_pass = st.secrets.get("garmin_pass")
 
-# Fallback för Sidebar
-if not api_key: api_key = st.sidebar.text_input("Gemini API Key", type="password")
-if not garmin_user: garmin_user = st.sidebar.text_input("Garmin Email")
-if not garmin_pass: garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
+# Fallback-rutor
+with st.sidebar:
+    st.header("🔑 Inställningar")
+    if not api_key: api_key = st.text_input("Gemini API Key", type="password")
+    if not garmin_user: garmin_user = st.text_input("Garmin Email")
+    if not garmin_pass: garmin_pass = st.text_input("Garmin Password", type="password")
 
-# --- 4. FUNKTIONER ---
+# --- 4. TEST-FUNKTIONER ---
 
-def get_ai_workout(key):
-    """Hämtar pass från AI (Gemini 1.5 Flash)."""
+def check_google_connection(key):
+    """Testar att prata med Google."""
+    if not STATUS_DEPS["google"]: return False, "Bibliotek saknas"
     try:
         genai.configure(api_key=key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        prompt = """
-        Du är cykelcoach. Skapa ett pass.
-        Svara ENDAST med JSON:
-        {
-            "name": "Passnamn",
-            "steps": [
-                {"type": "warmup", "duration_seconds": 300, "target_power_min": 100, "target_power_max": 150},
-                {"type": "interval", "duration_seconds": 180, "target_power_min": 250, "target_power_max": 280}
-            ]
-        }
-        """
-        response = model.generate_content(prompt)
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
+        # Hämta lista på modeller (snabbaste testet)
+        models = list(genai.list_models())
+        count = len(models)
+        # Hitta en flash-modell
+        flash_model = next((m.name for m in models if 'flash' in m.name), "Ingen Flash hittad")
+        return True, f"OK! Hittade {count} modeller. Använder: {flash_model}"
     except Exception as e:
-        st.error(f"AI Fel: {e}")
-        return None
+        return False, str(e)
 
-def upload_to_garmin(user, password, plan):
-    """Laddar upp till Garmin."""
-    if not GARMIN_AVAILABLE:
-        return False, "Garmin-biblioteket kunde inte laddas."
-        
+def check_garmin_connection(user, password):
+    """Testar att logga in på Garmin."""
+    if not STATUS_DEPS["garmin"]: return False, "Bibliotek saknas"
     try:
         client = Garmin(user, password)
         client.login()
-        
-        steps = []
-        step_order = 1
-        for step in plan.get('steps', []):
-            sType = 3
-            t = step.get('type', 'interval').lower()
-            if t == "warmup": sType = 1
-            elif t == "cooldown": sType = 2
-            elif t == "recovery": sType = 4
-            
-            steps.append({
-                "type": "ExecutableStepDTO",
-                "stepId": step_order,
-                "stepOrder": step_order,
-                "stepType": {"stepTypeId": sType, "stepTypeKey": step.get('type', 'interval')},
-                "endCondition": {"conditionTypeId": 2, "conditionTypeKey": "time"},
-                "endConditionValue": step.get('duration_seconds'), 
-                "targetType": {"targetTypeId": 2, "targetTypeKey": "power.zone"},
-                "targetValueOne": step.get('target_power_min'),
-                "targetValueTwo": step.get('target_power_max')
-            })
-            step_order += 1
-
-        payload = {
-            "sportType": {"sportTypeId": 2, "sportTypeKey": "cycling"},
-            "workoutName": f"UAE AI: {plan.get('name')}",
-            "steps": steps
-        }
-        
-        # Försök ladda upp
-        if hasattr(client, 'create_workout'):
-            client.create_workout(payload)
-            return True, "Uppladdat!"
-        else:
-            # Manuell metod
-            url = "https://connect.garmin.com/workout-service/workout"
-            if hasattr(client, 'session'):
-                 res = client.session.post(url, json=payload)
-            elif hasattr(client, 'req'):
-                 res = client.req.post(url, json=payload)
-            else:
-                 return False, "Kunde inte hitta rätt metod för uppladdning."
-                 
-            if res.status_code in [200, 201]:
-                return True, "Uppladdat manuellt!"
-            return False, f"Felkod: {res.status_code}"
-
+        name = client.full_name
+        return True, f"OK! Inloggad som: {name} (Ver: {garmin_version})"
     except Exception as e:
-        return False, f"Garmin-fel: {str(e)}"
+        return False, str(e)
 
-# --- 5. HUVUDPROGRAM (UI) ---
-st.title("🇦🇪 UAE Team Emirates - Safe Mode")
+# --- 5. DASHBOARD UI ---
 
-# Diagnostik-ruta
-if not GARMIN_AVAILABLE:
-    st.warning(f"⚠️ Garmin-modulen startade inte. Du kan skapa pass, men inte ladda upp automatiskt.\nFelmeddelande: {GARMIN_ERROR}")
-else:
-    st.success("✅ Garmin-modulen är aktiv.")
+col1, col2, col3 = st.columns(3)
 
-if st.button("🚀 Generera Pass"):
+# A. GOOGLE STATUS
+with col1:
+    st.subheader("🤖 Google AI")
     if not api_key:
-        st.error("Ingen API-nyckel hittades.")
+        st.warning("Ingen nyckel ifylld")
     else:
-        with st.spinner("AI jobbar..."):
-            plan = get_ai_workout(api_key)
-            
-        if plan:
-            st.success(f"Pass skapat: {plan.get('name')}")
-            
-            # Visa tabell
-            df = pd.DataFrame(plan['steps'])
-            st.table(df)
-            
-            # Försök ladda upp
-            if GARMIN_AVAILABLE and garmin_user and garmin_pass:
-                with st.spinner("Laddar upp..."):
-                    ok, msg = upload_to_garmin(garmin_user, garmin_pass, plan)
-                    if ok:
-                        st.balloons()
-                        st.success(f"✅ {msg}")
-                    else:
-                        st.error(f"Uppladdning misslyckades: {msg}")
-            elif not GARMIN_AVAILABLE:
-                st.info("Kör passet manuellt baserat på tabellen ovan.")
+        if st.button("Testa Google"):
+            ok, msg = check_google_connection(api_key)
+            if ok:
+                st.success(msg)
             else:
-                st.info("Fyll i Garmin-uppgifter i Secrets för automatisk uppladdning.")
+                st.error(f"Fel: {msg}")
+
+# B. GARMIN STATUS
+with col2:
+    st.subheader("⌚ Garmin")
+    if not (garmin_user and garmin_pass):
+        st.warning("Inlogg saknas")
+    else:
+        if st.button("Testa Garmin"):
+            ok, msg = check_garmin_connection(garmin_user, garmin_pass)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(f"Fel: {msg}")
+
+# C. GENERERA PASS (Endast om testerna går bra)
+with col3:
+    st.subheader("🚴 Skapa Pass")
+    if st.button("Kör Skarpt!"):
+        if not api_key:
+            st.error("Fixa Google-nyckel först.")
+        else:
+            with st.spinner("Skapar pass..."):
+                # Enkel logik inbäddad här för att slippa krångel
+                try:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    res = model.generate_content('Skapa ett cykelpass (JSON). Format: {"name":"Test","steps":[{"type":"interval","duration_seconds":300,"target_power_min":200,"target_power_max":250}]}')
+                    clean_json = res.text.replace("```json","").replace("```","").strip()
