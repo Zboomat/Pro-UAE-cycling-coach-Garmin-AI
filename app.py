@@ -20,27 +20,20 @@ if not api_key: api_key = st.sidebar.text_input("Gemini API Key", type="password
 if not garmin_user: garmin_user = st.sidebar.text_input("Garmin Email")
 if not garmin_pass: garmin_pass = st.sidebar.text_input("Garmin Password", type="password")
 
-# --- NY FUNKTION: HITTA MODELL AUTOMATISKT ---
+# --- FUNKTION: HITTA MODELL AUTOMATISKT ---
 def get_working_model(key):
-    """Frågar Google vilka modeller som finns och väljer den bästa."""
     try:
         genai.configure(api_key=key)
-        # Lista alla modeller
         all_models = genai.list_models()
-        # Spara bara de som kan generera text
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
-        
-        if not valid_models:
-            return None, "Inga modeller tillgängliga för detta konto."
-            
-        # Prioritera Flash-modeller om de finns
+        if not valid_models: return None, "Inga modeller tillgängliga."
+        # Prioritera Flash
         best_model = next((m for m in valid_models if 'flash' in m and 'lite' not in m), valid_models[0])
         return best_model, None
-        
     except Exception as e:
-        return None, f"Kunde inte kontakta Google. Är nyckeln rätt? Fel: {str(e)}"
+        return None, str(e)
 
-# --- GARMIN UPLOADER (MANUAL MODE) ---
+# --- GARMIN UPLOADER (ROBUST MANUAL OVERRIDE) ---
 class GarminWorkoutCreator:
     def __init__(self, email, password):
         self.client = None
@@ -48,17 +41,20 @@ class GarminWorkoutCreator:
         self.password = password
 
     def create_workout(self, json_data):
+        # 1. Logga in
         try:
             self.client = Garmin(self.email, self.password)
             self.client.login()
-        except:
-            return False, "Login misslyckades."
+        except Exception as e:
+            return False, f"Login misslyckades: {str(e)}"
 
+        # 2. Läs JSON
         try:
             plan = json.loads(json_data)
         except:
             return False, "Felaktig JSON från AI."
 
+        # 3. Bygg Passet
         steps = []
         step_order = 1
         for step in plan.get('steps', []):
@@ -87,42 +83,59 @@ class GarminWorkoutCreator:
             "steps": steps
         }
 
-        try:
-            # Manuell POST för att undvika versionsfel
-            url = "https://connect.garmin.com/workout-service/workout"
-            res = self.client.req.post(url, json=payload)
-            if res.status_code in [200, 201]:
-                return True, f"Passet '{payload['workoutName']}' skapat!"
-            return False, f"Garmin error: {res.status_code}"
-        except Exception as e:
-            return False, str(e)
+        # 4. Ladda upp (Försök alla metoder)
+        url = "https://connect.garmin.com/workout-service/workout"
+        
+        # Metod A: Officiell
+        if hasattr(self.client, 'create_workout'):
+            try:
+                self.client.create_workout(payload)
+                return True, f"Passet '{payload['workoutName']}' skapat (Metod A)!"
+            except: pass # Fortsätt om det misslyckas
+
+        # Metod B: Session (Det var här 'req' felet var)
+        if hasattr(self.client, 'session'):
+            try:
+                res = self.client.session.post(url, json=payload)
+                if res.status_code in [200, 201]:
+                    return True, f"Passet '{payload['workoutName']}' skapat (Metod B)!"
+            except: pass
+
+        # Metod C: Garth (Nyare bibliotek)
+        if hasattr(self.client, 'garth'):
+            try:
+                # Garth hanterar URL annorlunda ibland, men vi testar direkt via dess session
+                res = self.client.garth.client.post(url, json=payload)
+                if res.status_code in [200, 201]:
+                    return True, f"Passet '{payload['workoutName']}' skapat (Metod C)!"
+            except: pass
+
+        return False, "Kunde inte ladda upp passet med någon metod."
 
 # --- APP LOGIK ---
 st.title("🇦🇪 Team UAE - Autopilot")
 
 if st.button("🚀 Generera & Synka"):
     if not (api_key and garmin_user and garmin_pass):
-        st.error("Saknar nycklar!")
+        st.error("Saknar nycklar i Secrets!")
     else:
         status = st.empty()
         
         # 1. Hitta modell
-        status.info("Letar efter fungerande AI-modell...")
+        status.info("Initierar AI...")
         model_name, error = get_working_model(api_key)
-        
         if not model_name:
-            st.error(f"Kritiskt fel: {error}")
+            st.error(f"AI Fel: {error}")
             st.stop()
-            
-        status.success(f"Hittade modell: {model_name}")
         
-        # 2. Generera
+        # 2. Generera Pass
         try:
+            status.info(f"Designar pass med {model_name}...")
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(model_name)
             response = model.generate_content("""
                 Skapa ett cykelpass (JSON). 
-                Format: {"name": "Testpass", "steps": [{"type": "interval", "duration_seconds": 300, "target_power_min": 200, "target_power_max": 220}]}
+                Format: {"name": "UAE AI Interval", "steps": [{"type": "warmup", "duration_seconds": 600, "target_power_min": 100, "target_power_max": 150}, {"type": "interval", "duration_seconds": 300, "target_power_min": 250, "target_power_max": 280}]}
                 Svara ENDAST med JSON.
             """)
             json_str = response.text.replace("```json", "").replace("```", "").strip()
@@ -135,8 +148,9 @@ if st.button("🚀 Generera & Synka"):
             if ok:
                 st.balloons()
                 status.success(f"✅ {msg}")
+                st.info("Starta din Garmin Edge och synka nu!")
             else:
-                status.error(msg)
+                status.error(f"Uppladdning misslyckades: {msg}")
                 
         except Exception as e:
-            st.error(f"Ett fel uppstod: {e}")
+            st.error(f"Krasch: {e}")
