@@ -14,7 +14,7 @@ try:
     GOOGLE_OK = True
 except ImportError:
     GOOGLE_OK = False
-    st.error("Google-biblioteket saknas.")
+    st.error("Google-biblioteket saknas. (Kolla requirements.txt)")
 
 try:
     from garminconnect import Garmin
@@ -25,7 +25,7 @@ try:
     GARMIN_OK = True
 except ImportError:
     GARMIN_OK = False
-    st.error("Garmin-biblioteket saknas.")
+    st.error("Garmin-biblioteket saknas. (Kolla requirements.txt)")
 
 # --- 2. HÄMTA NYCKLAR ---
 api_key = st.secrets.get("api_key")
@@ -39,7 +39,7 @@ with st.sidebar:
     if not garmin_user: garmin_user = st.text_input("Garmin Email")
     if not garmin_pass: garmin_pass = st.text_input("Garmin Password", type="password")
 
-# --- 3. KONFIGURERA GOOGLE DIREKT ---
+# --- 3. KONFIGURERA GOOGLE DIREKT (Detta saknades sist) ---
 if api_key and GOOGLE_OK:
     try:
         genai.configure(api_key=api_key)
@@ -51,6 +51,7 @@ if api_key and GOOGLE_OK:
 def test_google():
     """Enkelt test för att se om Google svarar."""
     try:
+        # Vi använder en standardmodell
         model = genai.GenerativeModel('gemini-1.5-flash')
         res = model.generate_content("Svara bara ordet: 'Kontakt'")
         return True, res.text
@@ -96,7 +97,7 @@ def upload_workout(user, password, json_plan):
 
         # Försök ladda upp (Universalmetoden)
         
-        # Metod 1: create_workout
+        # Metod 1: create_workout (Om den finns)
         if hasattr(client, 'create_workout'):
             try:
                 client.create_workout(payload)
@@ -117,70 +118,4 @@ def upload_workout(user, password, json_plan):
     except Exception as e:
         return False, f"Totalt fel: {e}"
 
-# --- 5. DASHBOARD UI ---
-
-col1, col2, col3 = st.columns(3)
-
-# --- A. GOOGLE STATUS ---
-with col1:
-    st.subheader("1. Google AI")
-    if st.button("Testa Google"):
-        if not api_key:
-            st.warning("Ingen nyckel.")
-        else:
-            ok, msg = test_google()
-            if ok: st.success(f"✅ {msg}")
-            else: st.error(f"❌ {msg}")
-
-# --- B. GARMIN STATUS ---
-with col2:
-    st.subheader("2. Garmin")
-    if st.button("Testa Inlogg"):
-        if not (garmin_user and garmin_pass):
-            st.warning("Inlogg saknas.")
-        else:
-            try:
-                client = Garmin(garmin_user, garmin_pass)
-                client.login()
-                st.success(f"✅ Inloggad som: {client.full_name}")
-            except Exception as e:
-                st.error(f"❌ Fel: {e}")
-
-# --- C. KÖR SKARPT ---
-with col3:
-    st.subheader("3. Skapa & Synka")
-    if st.button("🚀 KÖR"):
-        status = st.empty()
-        
-        if not (api_key and garmin_user and garmin_pass):
-            status.error("Saknar nycklar.")
-        else:
-            # 1. AI
-            status.info("AI skapar pass...")
-            try:
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                prompt = 'Skapa ett cykelpass (JSON). Format: {"name":"UAE Test","steps":[{"type":"interval","duration_seconds":300,"target_power_min":200,"target_power_max":250}]}'
-                res = model.generate_content(prompt)
-                json_data = res.text.replace("```json", "").replace("```", "").strip()
-                
-                status.info("Laddar upp till Garmin...")
-                
-                # 2. Garmin Upload
-                ok, msg = upload_workout(garmin_user, garmin_pass, json_data)
-                
-                if ok:
-                    st.balloons()
-                    status.success(f"✅ {msg}")
-                    st.success("Passet finns nu i din app!")
-                else:
-                    status.error(f"Uppladdningsfel: {msg}")
-                    
-            except Exception as e:
-                status.error(f"Krasch: {e}")
-
-# Debug info
-with st.expander("Visa Debug"):
-    try:
-        st.write(f"Tmp dir: {os.listdir('/tmp')}")
-    except:
-        st.write("/tmp ej läsbar")
+#
