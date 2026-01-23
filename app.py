@@ -78,10 +78,10 @@ class GarminWorkoutCreator:
 
         # --- MANUAL OVERRIDE (Fixar Garmin-felet) ---
         try:
+            # Vi testar om funktionen finns, annars gör vi det manuellt
             if hasattr(self.client, 'create_workout'):
                 self.client.create_workout(payload)
             else:
-                # Manuell uppladdning om funktionen saknas
                 upload_url = "https://connect.garmin.com/workout-service/workout"
                 response = self.client.req.post(upload_url, json=payload)
                 if response.status_code not in [200, 201]:
@@ -132,13 +132,13 @@ with tab1:
             st.error("Fyll i nycklar i menyn till vänster!")
         else:
             status_text = st.empty()
-            status_text.info("Kontaktar Google Gemini (Lite)...")
+            status_text.info("Kontaktar Google Gemini (Standard)...")
             
             try:
                 genai.configure(api_key=api_key)
                 
-                # HÄR ÄR ÄNDRINGEN TILL LITE-MODELLEN:
-                model_name = 'gemini-2.0-flash-lite-preview-02-05'
+                # --- HÄR ÄR DEN SÄKRA MODELLEN ---
+                model_name = 'gemini-1.5-flash'
                 model = genai.GenerativeModel(model_name)
                 
                 prompt = f"""
@@ -160,7 +160,7 @@ with tab1:
                     status_text.error(f"Garmin fel: {msg}")
                     
             except Exception as e:
-                status_text.error(f"Ett fel uppstod: {e}. (Om det är 429 Quota, vänta 5 min!)")
+                status_text.error(f"Ett fel uppstod: {e}")
 
 with tab2:
     st.write(f"Total distans: {int(total_km)} km.")
